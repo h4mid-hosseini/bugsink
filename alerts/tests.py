@@ -16,6 +16,7 @@ from teams.models import Team, TeamMembership
 from .models import MessagingServiceConfig
 from .service_backends.slack import slack_backend_send_test_message, slack_backend_send_alert
 from .service_backends.discord import discord_backend_send_test_message, discord_backend_send_alert
+from .service_backends.telegram import telegram_backend_send_test_message, telegram_backend_send_alert
 from .tasks import send_new_issue_alert, send_regression_alert, send_unmute_alert, _get_users_for_email_alert
 from .views import DEBUG_CONTEXTS
 
@@ -467,3 +468,111 @@ class TestDiscordBackendErrorHandling(DjangoTestCase):
         self.config.clear_failure_status()
         self.config.save()
         self.assertFalse(self.config.has_recent_failure())
+
+
+class TestTelegramBackendErrorHandling(DjangoTestCase):
+    def setUp(self):
+        self.project = Project.objects.create(name="Test project")
+        self.config = MessagingServiceConfig.objects.create(
+            project=self.project,
+            display_name="Test Telegram",
+            kind="telegram",
+            config=json.dumps({"bot_token": "123456:ABC", "chat_id": "123456"}),
+        )
+
+    @patch('alerts.service_backends.telegram.requests.post')
+    def test_telegram_test_message_success_clears_failure_status(self, mock_post):
+        self.config.last_failure_timestamp = timezone.now()
+        self.config.last_failure_status_code = 500
+        self.config.last_failure_response_text = "Server Error"
+        self.config.save()
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status.return_value = None
+        mock_response.json.return_value = {"ok": True}
+        mock_post.return_value = mock_response
+
+        telegram_backend_send_test_message(
+            "123456:ABC",
+            "123456",
+            "Test project",
+            "Test Telegram",
+            self.config.id
+        )
+
+        self.config.refresh_from_db()
+        self.assertIsNone(self.config.last_failure_timestamp)
+        self.assertIsNone(self.config.last_failure_status_code)
+        self.assertIsNone(self.config.last_failure_response_text)
+
+    @patch('alerts.service_backends.telegram.requests.post')
+    def test_telegram_test_message_http_error_stores_failure(self, mock_post):
+        mock_response = Mock()
+        mock_response.status_code = 401
+        mock_response.text = '{"ok": false, "description": "Unauthorized"}'
+        mock_response.json.return_value = {"ok": False, "description": "Unauthorized"}
+        mock_response.raise_for_status.return_value = None
+        mock_post.return_value = mock_response
+
+        telegram_backend_send_test_message(
+            "bad-token",
+            "123456",
+            "Test project",
+            "Test Telegram",
+            self.config.id
+        )
+
+        self.config.refresh_from_db()
+        self.assertIsNotNone(self.config.last_failure_timestamp)
+        self.assertEqual(self.config.last_failure_status_code, 401)
+        self.assertEqual(self.config.last_failure_response_text, '{"ok": false, "description": "Unauthorized"}')
+        self.assertTrue(self.config.last_failure_is_json)
+        self.assertEqual(self.config.last_failure_error_type, "HTTPError")
+
+    @patch('alerts.service_backends.telegram.requests.post')
+    def test_telegram_test_message_connection_error_stores_failure(self, mock_post):
+        mock_post.side_effect = requests.ConnectionError("Connection failed")
+
+        telegram_backend_send_test_message(
+            "123456:ABC",
+            "123456",
+            "Test project",
+            "Test Telegram",
+            self.config.id
+        )
+
+        self.config.refresh_from_db()
+        self.assertIsNotNone(self.config.last_failure_timestamp)
+        self.assertIsNone(self.config.last_failure_status_code)
+        self.assertIsNone(self.config.last_failure_response_text)
+        self.assertIsNone(self.config.last_failure_is_json)
+        self.assertEqual(self.config.last_failure_error_type, "ConnectionError")
+        self.assertEqual(self.config.last_failure_error_message, "Connection failed")
+
+    @patch('alerts.service_backends.telegram.requests.post')
+    def test_telegram_alert_message_success_clears_failure_status(self, mock_post):
+        self.config.last_failure_timestamp = timezone.now()
+        self.config.last_failure_status_code = 500
+        self.config.save()
+
+        issue, _ = get_or_create_issue(project=self.project)
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status.return_value = None
+        mock_response.json.return_value = {"ok": True}
+        mock_post.return_value = mock_response
+
+        telegram_backend_send_alert(
+            "123456:ABC",
+            "123456",
+            issue.id,
+            "New issue",
+            "a",
+            "NEW",
+            self.config.id
+        )
+
+        self.config.refresh_from_db()
+        self.assertIsNone(self.config.last_failure_timestamp)
