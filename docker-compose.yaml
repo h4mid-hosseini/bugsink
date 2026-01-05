@@ -23,8 +23,6 @@ services:
     restart: unless-stopped
     ports:
       - "6060:8000"
-    volumes:
-      - ./bugsink_conf.py:/app/bugsink_conf.py
     environment:
       SECRET_KEY: django-insecure-RMLYThim9NybWgXiUGat32Aa0Qbgqscf4NPDQuZO2glcZPOiXn  # Change this (and remove django-insecure prefix), e.g. openssl rand -base64 50
       CREATE_SUPERUSER: email:password  # Change this (or remove it and execute 'createsuperuser' against the running container)
