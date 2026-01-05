@@ -16,7 +16,7 @@ services:
       timeout: 5s
 
   web:
-    image: bugsink/bugsink:2
+    build: .
     depends_on:
       db:
         condition: service_healthy
